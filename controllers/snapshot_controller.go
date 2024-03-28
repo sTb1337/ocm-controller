@@ -15,6 +15,7 @@ import (
 	rreconcile "github.com/fluxcd/pkg/runtime/reconcile"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/open-component-model/ocm-controller/pkg/cache"
+	"github.com/open-component-model/ocm-controller/pkg/metrics"
 	"github.com/open-component-model/ocm-controller/pkg/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,7 +32,8 @@ import (
 
 const (
 	snapshotFinalizer = "finalizers.snapshot.ocm.software"
-	scheme            = "https"
+	httpsScheme       = "https"
+	insecureScheme    = "http"
 )
 
 // SnapshotReconciler reconciles a Snapshot object.
@@ -42,6 +44,9 @@ type SnapshotReconciler struct {
 	RegistryServiceName string
 
 	Cache cache.Cache
+
+	// InsecureSkipVerify if set, snapshot URL will be http instead of https.
+	InsecureSkipVerify bool
 }
 
 //+kubebuilder:rbac:groups=delivery.ocm.software,resources=snapshots,verbs=get;list;watch;create;update;patch;delete
@@ -95,6 +100,10 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 		if derr := status.UpdateStatus(ctx, patchHelper, obj, r.EventRecorder, 0); derr != nil {
 			err = errors.Join(err, derr)
 		}
+
+		if err != nil {
+			metrics.SnapshotReconcileFailed.WithLabelValues(obj.Name).Inc()
+		}
 	}()
 
 	// Starts the progression by setting ReconcilingCondition.
@@ -112,10 +121,16 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (r
 
 	obj.Status.LastReconciledDigest = obj.Spec.Digest
 	obj.Status.LastReconciledTag = obj.Spec.Tag
+
+	scheme := httpsScheme
+	if r.InsecureSkipVerify {
+		scheme = insecureScheme
+	}
 	obj.Status.RepositoryURL = fmt.Sprintf("%s://%s/%s", scheme, r.RegistryServiceName, name)
 
 	msg := fmt.Sprintf("Snapshot with name '%s' is ready", obj.Name)
 	status.MarkReady(r.EventRecorder, obj, msg)
+	metrics.SnapshotReconcileSuccess.WithLabelValues(obj.Name).Inc()
 
 	return ctrl.Result{}, nil
 }

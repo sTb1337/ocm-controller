@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/fluxcd/pkg/apis/meta"
@@ -17,8 +18,9 @@ import (
 	rreconcile "github.com/fluxcd/pkg/runtime/reconcile"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	"github.com/fluxcd/source-controller/api/v1beta2"
+	"github.com/open-component-model/ocm-controller/pkg/metrics"
 	"github.com/open-component-model/ocm-controller/pkg/status"
-	"golang.org/x/exp/slices"
+	mh "github.com/open-component-model/pkg/metrics"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -170,6 +172,10 @@ func (r *LocalizationReconciler) Reconcile(
 		if derr := status.UpdateStatus(ctx, patchHelper, obj, r.EventRecorder, obj.GetRequeueAfter()); derr != nil {
 			err = errors.Join(err, derr)
 		}
+
+		if err != nil {
+			metrics.LocalizationReconcileFailed.WithLabelValues(obj.GetName()).Inc()
+		}
 	}()
 
 	// Starts the progression by setting ReconcilingCondition.
@@ -282,7 +288,8 @@ func (r *LocalizationReconciler) reconcile(
 		)
 	}
 
-	if err := r.MutationReconciler.ReconcileMutationObject(ctx, obj); err != nil {
+	size, err := r.MutationReconciler.ReconcileMutationObject(ctx, obj)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{RequeueAfter: obj.GetRequeueAfter()}, nil
 		}
@@ -301,6 +308,13 @@ func (r *LocalizationReconciler) reconcile(
 	}
 
 	status.MarkReady(r.EventRecorder, obj, "Reconciliation success")
+
+	metrics.SnapshotNumberOfBytesReconciled.WithLabelValues(obj.GetSnapshotName(), obj.GetSnapshotDigest(), obj.Spec.SourceRef.Name).Set(float64(size))
+	metrics.LocalizationReconcileSuccess.WithLabelValues(obj.Name).Inc()
+
+	if product := IsProductOwned(obj); product != "" {
+		metrics.MPASLocationReconciledStatus.WithLabelValues(product, mh.MPASStatusSuccess).Inc()
+	}
 
 	return ctrl.Result{RequeueAfter: obj.GetRequeueAfter()}, nil
 }
@@ -431,11 +445,18 @@ func (r *LocalizationReconciler) checkFluxSourceReadiness(
 }
 
 func makeRequestsForLocalizations(ll ...v1alpha1.Localization) []reconcile.Request {
-	slices.SortFunc(ll, func(a, b v1alpha1.Localization) bool {
+	slices.SortFunc(ll, func(a, b v1alpha1.Localization) int {
 		aKey := fmt.Sprintf("%s/%s", a.GetNamespace(), a.GetName())
 		bKey := fmt.Sprintf("%s/%s", b.GetNamespace(), b.GetName())
 
-		return aKey < bKey
+		switch {
+		case aKey < bKey:
+			return -1
+		case aKey == bKey:
+			return 0
+		}
+
+		return 1
 	})
 
 	refs := slices.CompactFunc(ll, func(a, b v1alpha1.Localization) bool {

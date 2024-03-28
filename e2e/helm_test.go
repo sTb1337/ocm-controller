@@ -36,7 +36,7 @@ func TestHelmChartResource(t *testing.T) {
 	require.NoError(t, err)
 
 	cache := oci.NewClient("127.0.0.1:5000", oci.WithInsecureSkipVerify(true))
-	_, err = cache.PushData(context.Background(), charts, registry.ChartLayerMediaType, "podinfo", "6.3.5")
+	_, _, err = cache.PushData(context.Background(), charts, registry.ChartLayerMediaType, "podinfo", "6.3.5")
 	require.NoError(t, err)
 
 	setupComponent := features.New("Add components to component-version").
@@ -90,8 +90,8 @@ func helmResource(chart, url string, resource shared.Resource) shared.ComponentM
 				Version: resource.Version,
 			},
 			Type:     resource.Type,
-			Relation: ocmmetav1.ExternalRelation,
-		}, helm.New(chart, url))
+			Relation: ocmmetav1.LocalRelation,
+		}, helm.New(chart, url), ocm.SkipDigest(true))
 	}
 }
 
